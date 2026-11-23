@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import font, messagebox, ttk
 
 from contracts import (
-    AMOUNT_LIMIT, COUNT_LIMIT, COUNT_THRESHOLD, EXEMPTION_LABELS, MIN_AMOUNT, CompanyYear,
+    AMOUNT_LIMIT, AMOUNT_THRESHOLD, COUNT_LIMIT, COUNT_THRESHOLD, EXEMPTION_LABELS, CompanyYear,
     Contract, Ledger, business_digits, business_display, parse_won, won,
 )
 from storage import CONTRACT_HEADERS, StorageError, WorkbookStore
@@ -23,7 +23,7 @@ NAVY = "#183248"
 TEAL = "#007c70"
 DANGER = "#a22531"
 
-VERSION = "v7.0"
+VERSION = "v8.0"
 APP_TITLE = f"계약 한도 관리 · {VERSION}"
 METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체")
 
@@ -491,7 +491,7 @@ class ContractEditor:
         self.exemption_checkbox = ttk.Checkbutton(form, text="면세", variable=self.tax_exempt,
                                                   command=self.toggle_tax_exemption)
         self.exemption_checkbox.grid(row=vat_row + 1, column=1, sticky="w", pady=(4, 5))
-        ttk.Label(form, text=f"공급가액 {won(MIN_AMOUNT)} 초과  ·  {won(COUNT_THRESHOLD)} 초과 시 1회",
+        ttk.Label(form, text=f"공급가액 {won(AMOUNT_THRESHOLD)} 미만 제외  ·  {won(COUNT_THRESHOLD)} 이상 1회",
                   style="Muted.TLabel").grid(row=vat_row + 2, column=0, columnspan=3, sticky="w", pady=(6, 7))
         self.feedback = ttk.Label(form, style="Preview.TLabel", padding=11, width=54, wraplength=460)
         self.feedback.grid(row=vat_row + 3, column=0, columnspan=3, sticky="ew")
@@ -658,9 +658,11 @@ class ContractEditor:
 
         before, after = self.app.ledger.preview(candidate)
         line = f"{candidate.signed_on.year}년 누적   {before.count}회 / {won(before.amount)} → {after.count}회 / {won(after.amount)}"
-        status = " · ".join(after.violations) if after.violations else after.status
-        self.feedback.configure(text=f"{line}\n{status}", style="Error.TLabel" if after.violations else "Preview.TLabel")
-        self.save_button.state(["disabled"] if after.violations else ["!disabled"])
+        violations = self.app.ledger.limit_violations(candidate, before, after)
+        status = "집계 제외" if not candidate.amount_for_limit else after.status
+        self.feedback.configure(text=f"{line}\n{' · '.join(violations) if violations else status}",
+                                style="Error.TLabel" if violations else "Preview.TLabel")
+        self.save_button.state(["disabled"] if violations else ["!disabled"])
 
     def submit(self, _event=None) -> None:
         if self.save_button.instate(["disabled"]):

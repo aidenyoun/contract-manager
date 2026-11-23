@@ -22,22 +22,40 @@ def contract(number, amount, signed_on="2026-02-01", business=BUSINESS, company=
 
 class LedgerTests(unittest.TestCase):
     def test_boundaries(self):
-        with self.assertRaisesRegex(ValueError, "2,000,000원"):
-            contract(1, 2_000_000)
+        with self.assertRaisesRegex(ValueError, "0원"):
+            contract(1, 0)
         ledger = Ledger()
-        for number, amount in enumerate((2_000_001, 5_000_000, 5_000_001), start=1):
-            ledger = ledger.upsert(contract(number, amount))
-        self.assertEqual(ledger.companies[(2026, "0123456789")].totals, Totals(12_000_002, 1))
+        cases = (
+            (1_999_999, Totals(0, 0)),
+            (2_000_000, Totals(2_000_000, 0)),
+            (4_999_999, Totals(6_999_999, 0)),
+            (5_000_000, Totals(11_999_999, 1)),
+            (5_000_001, Totals(17_000_000, 2)),
+        )
+        for number, (amount, expected) in enumerate(cases, start=1):
+            entry = contract(number, amount)
+            ledger = ledger.upsert(entry)
+            self.assertEqual(ledger.companies[entry.key].totals, expected)
 
-    def test_fifth_contract_and_small_contract_after_count_limit(self):
+    def test_count_limit_blocks_new_eligible_contracts(self):
         ledger = Ledger()
         for number in range(1, 6):
             ledger = ledger.upsert(contract(number, 6_000_000))
         self.assertEqual(ledger.companies[(2026, "0123456789")].totals.status, "한도 도달")
-        ledger = ledger.upsert(contract(6, 5_000_000))
-        self.assertEqual(ledger.companies[(2026, "0123456789")].totals, Totals(35_000_000, 5))
+        with self.assertRaisesRegex(ValueError, "연간 한도 도달"):
+            ledger.upsert(contract(6, 2_000_000))
+        ledger = ledger.upsert(contract(6, 1_999_999))
+        self.assertEqual(ledger.companies[(2026, "0123456789")].totals, Totals(30_000_000, 5))
         with self.assertRaisesRegex(ValueError, "횟수 1회 초과"):
-            ledger.upsert(contract(7, 5_000_001))
+            ledger.upsert(contract(7, 5_000_000))
+
+    def test_recounted_over_limit_record_can_be_corrected(self):
+        rows = tuple(contract(number, 6_000_000) for number in range(1, 8))
+        ledger = Ledger(rows, 8)
+        reduced = ledger.upsert(contract(1, 4_999_999))
+        self.assertEqual(reduced.companies[rows[0].key].totals, Totals(40_999_999, 6))
+        with self.assertRaisesRegex(ValueError, "횟수 2회 초과"):
+            reduced.upsert(rows[0])
 
     def test_amount_limit_and_both_violations(self):
         ledger = Ledger()
@@ -56,8 +74,8 @@ class LedgerTests(unittest.TestCase):
     def test_edit_move_and_delete_recompute_both_groups(self):
         ledger = Ledger().upsert(contract(1, 5_000_001))
         ledger = ledger.upsert(contract(2, 4_000_000, company="한빛 주식회사"))
-        changed = contract(1, 5_000_000)
-        self.assertEqual(ledger.preview(changed), (Totals(9_000_001, 1), Totals(9_000_000, 0)))
+        changed = contract(1, 4_999_999)
+        self.assertEqual(ledger.preview(changed), (Totals(9_000_001, 1), Totals(8_999_999, 0)))
         ledger = ledger.upsert(changed)
         moved = contract(1, 9_000_000, "2025-12-31", business="999-99-99999")
         ledger = ledger.upsert(moved)
@@ -74,13 +92,13 @@ class LedgerTests(unittest.TestCase):
 
     def test_vat_never_affects_contract_counts_or_annual_limits(self):
         fields = ("2026-02-01", "한빛", BUSINESS, "계약")
-        small = Contract.from_fields(1, *fields, 5_000_000, vat_amount=900_000)
-        big = Contract.from_fields(2, *fields, 195_000_000)
+        small = Contract.from_fields(1, *fields, 4_999_999, vat_amount=900_000)
+        big = Contract.from_fields(2, *fields, 195_000_001)
         ledger = Ledger().upsert(small).upsert(big)
         self.assertEqual((small.counted, big.vat_amount), (0, 19_500_000))
         self.assertEqual(ledger.companies[small.key].totals, Totals(200_000_000, 1))
 
-        exempt = Contract.from_fields(2, *fields, 195_000_000, tax_exempt=True)
+        exempt = Contract.from_fields(2, *fields, 195_000_001, tax_exempt=True)
         self.assertEqual((exempt.vat_amount, exempt.counted), (0, 1))
         self.assertEqual(ledger.preview(exempt), (Totals(200_000_000, 1), Totals(200_000_000, 1)))
         self.assertEqual(contract(1, 5_000_009).vat_amount, 500_000)
@@ -132,6 +150,29 @@ class WorkbookTests(unittest.TestCase):
 
         self.store.save(ledger.delete(2))
         self.assertEqual(self.store.load().next_number, 3)
+
+    def test_existing_workbook_recalculates_inclusive_count_boundary_once(self):
+        ledger = self.store.load().upsert(contract(1, 5_000_000))
+        self.store.save(ledger)
+        previous = load_workbook(BytesIO(self.path.read_bytes()))
+        previous[SETTINGS_SHEET]["E1"] = None
+        previous[CONTRACT_SHEET]["I2"] = 0
+        previous[SUMMARY_SHEET]["E2"] = 0
+        previous["2026년"]["I2"] = 0
+        previous.save(self.path)
+        previous.close()
+        old_content = self.path.read_bytes()
+
+        self.assertEqual(self.store.load().contracts, ledger.contracts)
+        self.assertEqual(self.store.backup_path.read_bytes(), old_content)
+        refreshed_content = self.path.read_bytes()
+        workbook = load_workbook(BytesIO(refreshed_content))
+        self.addCleanup(workbook.close)
+        self.assertEqual(workbook[CONTRACT_SHEET]["I2"].value, 1)
+        self.assertEqual(workbook[SUMMARY_SHEET]["E2"].value, 1)
+        self.assertEqual(workbook["2026년"]["I2"].value, 1)
+        self.store.load()
+        self.assertEqual(self.path.read_bytes(), refreshed_content)
 
     def test_new_workbook_contains_empty_fiscal_year_tabs(self):
         self.store.load()

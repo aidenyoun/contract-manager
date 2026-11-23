@@ -3,7 +3,7 @@ from datetime import date, datetime
 import re
 
 
-MIN_AMOUNT = 2_000_000
+AMOUNT_THRESHOLD = 2_000_000
 COUNT_THRESHOLD = 5_000_000
 AMOUNT_LIMIT = 200_000_000
 COUNT_LIMIT = 5
@@ -70,7 +70,11 @@ class Contract:
 
     @property
     def counted(self) -> int:
-        return int(self.supply_amount > COUNT_THRESHOLD)
+        return int(self.supply_amount >= COUNT_THRESHOLD)
+
+    @property
+    def amount_for_limit(self) -> int:
+        return self.supply_amount if self.supply_amount >= AMOUNT_THRESHOLD else 0
 
     @classmethod
     def from_fields(
@@ -102,8 +106,8 @@ class Contract:
         title = required_text(title, "계약명")
 
         supply_amount = parse_won(supply_amount, "공급가액")
-        if supply_amount <= MIN_AMOUNT:
-            raise ValueError(f"공급가액은 {won(MIN_AMOUNT)}을 초과해야 합니다.")
+        if supply_amount == 0:
+            raise ValueError("공급가액은 0원을 초과해야 합니다.")
 
         if tax_exempt is None:
             if vat_amount is not None:
@@ -126,17 +130,16 @@ class Totals:
     count: int = 0
 
     def add(self, contract: Contract) -> "Totals":
-        return Totals(self.amount + contract.supply_amount, self.count + contract.counted)
+        return Totals(self.amount + contract.amount_for_limit, self.count + contract.counted)
 
     def remove(self, contract: Contract) -> "Totals":
-        return Totals(self.amount - contract.supply_amount, self.count - contract.counted)
+        return Totals(self.amount - contract.amount_for_limit, self.count - contract.counted)
 
-    @property
-    def violations(self) -> tuple[str, ...]:
+    def violations_since(self, before: "Totals") -> tuple[str, ...]:
         details = []
-        if self.amount > AMOUNT_LIMIT:
+        if self.amount > max(AMOUNT_LIMIT, before.amount):
             details.append(f"공급가액 {won(self.amount - AMOUNT_LIMIT)} 초과")
-        if self.count > COUNT_LIMIT:
+        if self.count > max(COUNT_LIMIT, before.count):
             details.append(f"횟수 {self.count - COUNT_LIMIT}회 초과")
         return tuple(details)
 
@@ -188,13 +191,27 @@ class Ledger:
             after = after.remove(previous)
         return before, after.add(contract)
 
+    def limit_violations(self, contract: Contract, before: Totals, after: Totals) -> tuple[str, ...]:
+        if not contract.amount_for_limit:
+            return ()
+        previous = self.by_number.get(contract.number)
+        if previous and previous.key == contract.key and previous.amount_for_limit:
+            return after.violations_since(before)
+        violations = after.violations_since(Totals())
+        if violations:
+            return violations
+        if before.amount >= AMOUNT_LIMIT or before.count >= COUNT_LIMIT:
+            return ("연간 한도 도달로 추가 계약을 등록할 수 없습니다.",)
+        return ()
+
     def upsert(self, contract: Contract) -> "Ledger":
         if contract.number not in self.by_number and contract.number != self.next_number:
             raise ValueError("순번이 변경되었습니다. 계약을 다시 열어 주세요.")
 
-        _, after = self.preview(contract)
-        if after.violations:
-            raise ValueError(" · ".join(after.violations))
+        before, after = self.preview(contract)
+        violations = self.limit_violations(contract, before, after)
+        if violations:
+            raise ValueError(" · ".join(violations))
 
         remaining = tuple(row for row in self.contracts if row.number != contract.number)
         return Ledger(

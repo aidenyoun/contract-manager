@@ -170,7 +170,8 @@ class ContractGuiTests(unittest.TestCase):
         entry.icursor(2)
         entry.event_generate("<KeyPress>", keysym="Delete")
         self.assertEqual(entry.get(), "1,245,678")
-        self.assertTrue(editor.save_button.instate(["disabled"]))
+        self.assertTrue(editor.save_button.instate(["!disabled"]))
+        self.assertIn("집계 제외", editor.feedback.cget("text"))
 
         editor.variables[-1].set("2500000")
         self.assertEqual(entry.get(), "2,500,000")

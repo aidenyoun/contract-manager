@@ -19,6 +19,7 @@ from contracts import AMOUNT_LIMIT, COUNT_LIMIT, EXEMPTION_LABELS, Contract, Led
 CONTRACT_SHEET = "계약 대장"
 SUMMARY_SHEET = "업체별 현황"
 SETTINGS_SHEET = "_설정"
+AGGREGATION_RULES_VERSION = 1
 YEAR_SHEET_HEADERS = ("회계연도", "연도별 계약 시트")
 LEGACY_CONTRACT_HEADERS = (
     "순번", "계약 일자", "업체명", "사업자번호", "계약명", "계약 금액",
@@ -105,6 +106,10 @@ def managed_year_sheets(workbook: Workbook) -> dict[int, str]:
     known_names = set(workbook.sheetnames) - {CONTRACT_SHEET, SUMMARY_SHEET, SETTINGS_SHEET}
     return {year: name for year, name in rows if type(year) is int and name in known_names}
 
+def needs_aggregation_refresh(workbook: Workbook) -> bool:
+    return (SETTINGS_SHEET not in workbook.sheetnames
+            or workbook[SETTINGS_SHEET]["E1"].value != AGGREGATION_RULES_VERSION)
+
 
 def write_workbook(ledger: Ledger, path: Path, previous: bytes | None = None, *,
                    layout_only: bool = False) -> None:
@@ -114,14 +119,17 @@ def write_workbook(ledger: Ledger, path: Path, previous: bytes | None = None, *,
             workbook.active.title = CONTRACT_SHEET
         contract_sheet = workbook[CONTRACT_SHEET]
         upgrade_tax_columns = contract_sheet["F1"].value == LEGACY_CONTRACT_HEADERS[5]
-        refresh_contracts = not layout_only or upgrade_tax_columns
+        refresh_totals = needs_aggregation_refresh(workbook)
+        refresh_contracts = not layout_only or upgrade_tax_columns or refresh_totals
         if refresh_contracts:
             write_contract_sheet(contract_sheet, ledger, ledger.contracts)
-        if not layout_only:
-            summary = workbook[SUMMARY_SHEET] if SUMMARY_SHEET in workbook.sheetnames else workbook.create_sheet(SUMMARY_SHEET)
+        summary = workbook[SUMMARY_SHEET] if SUMMARY_SHEET in workbook.sheetnames else None
+        has_standard_summary = summary is None or tuple(cell.value for cell in summary[1][:5]) == SUMMARY_HEADERS[:5]
+        if not layout_only or (refresh_totals and has_standard_summary):
+            if summary is None:
+                summary = workbook.create_sheet(SUMMARY_SHEET)
             write_summary_sheet(summary, ledger)
-        elif upgrade_tax_columns and SUMMARY_SHEET in workbook.sheetnames:
-            summary = workbook[SUMMARY_SHEET]
+        elif upgrade_tax_columns and summary is not None:
             for cell, old_label, new_label in (("F1", "연간 누적 금액", SUMMARY_HEADERS[5]),
                                                ("H1", "남은 금액", SUMMARY_HEADERS[7])):
                 if summary[cell].value == old_label:
@@ -150,6 +158,8 @@ def write_workbook(ledger: Ledger, path: Path, previous: bytes | None = None, *,
         settings = workbook[SETTINGS_SHEET] if SETTINGS_SHEET in workbook.sheetnames else workbook.create_sheet(SETTINGS_SHEET)
         settings.delete_rows(1, settings.max_row)
         write_row(settings, 1, ("다음 순번", ledger.next_number))
+        settings["D1"] = "집계 기준 버전"
+        settings["E1"] = AGGREGATION_RULES_VERSION
         write_row(settings, 2, YEAR_SHEET_HEADERS)
         for row_number, info in enumerate(saved_names.items(), start=3):
             write_row(settings, row_number, info)
@@ -201,8 +211,9 @@ def read_workbook(content: bytes) -> tuple[Ledger, bool, bool]:
                 if type(saved_next) is int:
                     next_number = max(next_number, saved_next)
             ledger = Ledger(tuple(sorted(contracts, key=lambda row: row.number)), next_number)
-            needs_year_sheets = not set(ledger.fiscal_years).issubset(managed_year_sheets(workbook))
-            return ledger, needs_year_sheets, legacy_amounts
+            needs_layout_update = (needs_aggregation_refresh(workbook)
+                                   or not set(ledger.fiscal_years).issubset(managed_year_sheets(workbook)))
+            return ledger, needs_layout_update, legacy_amounts
         finally:
             workbook.close()
     except (BadZipFile, InvalidFileException, ParseError, KeyError, ValueError, TypeError) as error:
@@ -262,9 +273,9 @@ class WorkbookStore:
             ledger = Ledger()
             self.save(ledger)
             return ledger
-        ledger, needs_year_sheets, legacy_amounts = read_workbook(content)
+        ledger, needs_layout_update, legacy_amounts = read_workbook(content)
         self.revision = sha256(content).digest()
-        if legacy_amounts or needs_year_sheets:
+        if legacy_amounts or needs_layout_update:
             self.save(ledger, layout_only=True)
         return ledger
 
