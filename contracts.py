@@ -61,6 +61,10 @@ class Contract:
     tax_exempt: bool | None = None
 
     @property
+    def total_amount(self) -> int:
+        return self.supply_amount + (self.vat_amount or 0)
+
+    @property
     def key(self) -> tuple[int, str]:
         return self.signed_on.year, self.business_number
 

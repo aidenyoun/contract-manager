@@ -94,6 +94,8 @@ class ContractGuiTests(unittest.TestCase):
         table = self.app.contract_table
         click_date = table.heading("column1", "command")
         click_amount = table.heading("column5", "command")
+        self.assertEqual(table.heading("column5", "text"), "총금액")
+        self.assertEqual(table.heading("column6", "text"), "공급가액")
         self.assertEqual(table.get_children(), ("5", "4", "3"))
         table.tk.call(click_date)
         self.assertEqual(table.get_children(), ("3", "4", "5"))
@@ -154,8 +156,8 @@ class ContractGuiTests(unittest.TestCase):
         for digit in "5000001":
             entry.event_generate("<KeyPress>", keysym=digit)
         self.assertEqual((entry.get(), entry.index(tk.INSERT)), ("5,000,001", 9))
-        self.assertEqual(editor.supply_display.get(), "4,500,001")
-        self.assertIn("0회 / 4,500,001원", editor.feedback.cget("text"))
+        self.assertEqual(editor.supply_display.get(), "4,545,456")
+        self.assertIn("0회 / 4,545,456원", editor.feedback.cget("text"))
 
         entry.icursor(2)
         entry.event_generate("<KeyPress>", keysym="BackSpace")
@@ -175,14 +177,18 @@ class ContractGuiTests(unittest.TestCase):
         self.assertTrue(editor.save_button.instate(["!disabled"]))
         editor.save_button.invoke()
         saved = self.app.store.load().contracts[-1]
-        self.assertEqual((saved.supply_amount, saved.vat_amount, saved.counted), (2_250_000, 250_000, 0))
+        self.assertEqual((saved.supply_amount, saved.vat_amount, saved.counted), (2_272_728, 227_272, 0))
+        table = self.app.contract_table
+        self.assertEqual(table.item(str(saved.number), "values")[5:8], ("2,500,000원", "2,272,728원", "227,272원"))
 
     def test_vat_can_be_overridden_and_exempted_in_contract_editor(self):
         editor = ContractEditor(self.app, None)
-        for variable, value in zip(editor.variables[1:], ("신규 업체", "1011123456", "세금 확인", "5000000")):
+        for variable, value in zip(editor.variables[1:], ("신규 업체", "1011123456", "세금 확인", "2310000")):
             variable.set(value)
-        self.assertEqual(editor.vat_entry.get(), "500,000")
-        self.assertIn("0회 / 4,500,000원", editor.feedback.cget("text"))
+        self.assertEqual(editor.vat_entry.get(), "210,000")
+        self.assertEqual(editor.supply_display.get(), "2,100,000")
+        self.assertIn("0회 / 2,100,000원", editor.feedback.cget("text"))
+        editor.variables[-1].set("5000000")
         editor.vat_variable.set("5000001")
         self.assertTrue(editor.save_button.instate(["disabled"]))
         self.assertIn("총금액을 초과", editor.feedback.cget("text"))
@@ -206,7 +212,7 @@ class ContractGuiTests(unittest.TestCase):
         self.assertEqual(editor.vat_entry.get(), "0")
         self.assertIn("1회 / 6,000,000원", editor.feedback.cget("text"))
         editor.exemption_checkbox.invoke()
-        self.assertEqual(editor.vat_entry.get(), "600,000")
+        self.assertEqual(editor.vat_entry.get(), "545,454")
         editor.exemption_checkbox.invoke()
         editor.save_button.invoke()
         saved = self.app.store.load().contracts[-1]

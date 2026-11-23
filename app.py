@@ -9,7 +9,7 @@ from tkinter import font, messagebox, ttk
 
 from contracts import (
     AMOUNT_LIMIT, COUNT_LIMIT, COUNT_THRESHOLD, EXEMPTION_LABELS, MIN_AMOUNT, CompanyYear,
-    Contract, Ledger, business_digits, business_display, default_vat, parse_won, won,
+    Contract, Ledger, business_digits, business_display, parse_won, won,
 )
 from storage import CONTRACT_HEADERS, StorageError, WorkbookStore
 
@@ -23,7 +23,7 @@ NAVY = "#183248"
 TEAL = "#007c70"
 DANGER = "#a22531"
 
-VERSION = "v6.0"
+VERSION = "v7.0"
 APP_TITLE = f"계약 한도 관리 · {VERSION}"
 METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체")
 
@@ -40,12 +40,15 @@ class Column:
     sort_key: Callable[[str], str | int] = str.casefold
 
 
-CONTRACT_COLUMNS = tuple(Column(label, *settings) for label, settings in zip(CONTRACT_HEADERS, (
-    (58, "center", numeric_value), (104, "center"), (137, "w"), (116, "center"),
-    (174, "w"), (109, "e", numeric_value),
-    (97, "e", lambda text: -1 if text == "—" else numeric_value(text)), (90, "center"),
-    (150, "e", numeric_value), (174, "e", numeric_value),
-)))
+CONTRACT_COLUMNS = tuple(Column(label, *settings) for label, settings in zip(
+    (*CONTRACT_HEADERS[:5], "총금액", *CONTRACT_HEADERS[5:]),
+    (
+        (51, "center", numeric_value), (98, "center"), (122, "w"), (110, "center"),
+        (143, "w"), (107, "e", numeric_value), (101, "e", numeric_value),
+        (97, "e", lambda text: -1 if text == "—" else numeric_value(text)), (90, "center"),
+        (150, "e", numeric_value), (174, "e", numeric_value),
+    ),
+))
 COMPANY_COLUMNS = (
     Column("업체명", 170, "w"), Column("사업자번호", 126, "center"),
     Column("전체 계약 건수", 102, "e", numeric_value), Column("연간 누적 횟수", 120, "e", numeric_value),
@@ -307,7 +310,8 @@ class ContractApp:
             totals = companies[row.business_number].totals
             self.contract_table.insert("", "end", iid=str(row.number), tags=(totals.status,), values=(
                 row.number, row.signed_on.isoformat(), row.company, business_display(row.business_number),
-                row.title, won(row.supply_amount), "—" if row.vat_amount is None else won(row.vat_amount),
+                row.title, won(row.total_amount), won(row.supply_amount),
+                "—" if row.vat_amount is None else won(row.vat_amount),
                 EXEMPTION_LABELS[row.tax_exempt], f"{totals.count}회", won(totals.amount),
             ))
         self.contract_table.apply_sort()
@@ -444,7 +448,7 @@ class ContractEditor:
             ("업체명", contract.company if contract else "", ""),
             ("사업자번호", business_display(contract.business_number) if contract else "", "숫자 10자리"),
             ("계약명", contract.title if contract else "", ""),
-            ("총금액", f"{contract.supply_amount + (contract.vat_amount or 0):,}" if contract else "", "부가세 포함"),
+            ("총금액", f"{contract.total_amount:,}" if contract else "", "부가세 포함"),
         )
         form = ttk.Frame(self.window, padding=(22, 16))
         form.pack(fill="both", expand=True)
@@ -481,7 +485,7 @@ class ContractEditor:
         self.vat_entry.grid(row=vat_row, column=1, sticky="ew", pady=4)
         if self.tax_exempt.get():
             self.vat_entry.state(["readonly"])
-        ttk.Label(form, text="총금액의 10% · 직접 수정 가능", style="Muted.TLabel").grid(
+        ttk.Label(form, text="공급가액의 10% · 직접 수정 가능", style="Muted.TLabel").grid(
             row=vat_row, column=2, sticky="w", padx=(9, 0)
         )
         self.exemption_checkbox = ttk.Checkbutton(form, text="면세", variable=self.tax_exempt,
@@ -599,7 +603,8 @@ class ContractEditor:
             amount = parse_won(self.variables[-1].get(), "총금액")
         except ValueError:
             return ""
-        return f"{default_vat(amount):,}"
+        # One eleventh of the VAT-inclusive amount is tax. Discard sub-won fractions.
+        return f"{amount // 11:,}"
 
     def total_amount_changed(self, *_args) -> None:
         self.format_amount(self.variables[-1], self.entries[-1])
