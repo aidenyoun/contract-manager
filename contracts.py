@@ -45,8 +45,8 @@ def parse_won(value: object, label: str) -> int:
         raise ValueError(f"{label} 입력값이 너무 큽니다.") from None
 
 
-def default_vat(supply_amount: int) -> int:
-    return supply_amount // 10
+def default_vat(amount: int) -> int:
+    return amount // 10
 
 
 @dataclass(frozen=True)

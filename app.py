@@ -23,7 +23,7 @@ NAVY = "#183248"
 TEAL = "#007c70"
 DANGER = "#a22531"
 
-VERSION = "v5.0"
+VERSION = "v6.0"
 APP_TITLE = f"계약 한도 관리 · {VERSION}"
 METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체")
 
@@ -444,7 +444,7 @@ class ContractEditor:
             ("업체명", contract.company if contract else "", ""),
             ("사업자번호", business_display(contract.business_number) if contract else "", "숫자 10자리"),
             ("계약명", contract.title if contract else "", ""),
-            ("공급가액", f"{contract.supply_amount:,}" if contract else "", "원 단위 정수"),
+            ("총금액", f"{contract.supply_amount + (contract.vat_amount or 0):,}" if contract else "", "부가세 포함"),
         )
         form = ttk.Frame(self.window, padding=(22, 16))
         form.pack(fill="both", expand=True)
@@ -463,7 +463,14 @@ class ContractEditor:
             self.variables.append(variable)
             self.entries.append(entry)
 
-        vat_row = first_row + len(fields)
+        supply_row = first_row + len(fields)
+        self.supply_display = tk.StringVar()
+        ttk.Label(form, text="공급가액").grid(row=supply_row, column=0, sticky="w", padx=(0, 14), pady=4)
+        ttk.Entry(form, textvariable=self.supply_display, width=35, state="readonly", takefocus=False).grid(
+            row=supply_row, column=1, sticky="ew", pady=4
+        )
+
+        vat_row = supply_row + 1
         self.legacy_tax = contract is not None and contract.tax_exempt is None
         vat_text = f"{contract.vat_amount:,}" if contract is not None and contract.vat_amount is not None else ""
         self.vat_variable = tk.StringVar(value=vat_text)
@@ -474,7 +481,7 @@ class ContractEditor:
         self.vat_entry.grid(row=vat_row, column=1, sticky="ew", pady=4)
         if self.tax_exempt.get():
             self.vat_entry.state(["readonly"])
-        ttk.Label(form, text="자동 10% · 직접 수정 가능", style="Muted.TLabel").grid(
+        ttk.Label(form, text="총금액의 10% · 직접 수정 가능", style="Muted.TLabel").grid(
             row=vat_row, column=2, sticky="w", padx=(9, 0)
         )
         self.exemption_checkbox = ttk.Checkbutton(form, text="면세", variable=self.tax_exempt,
@@ -491,7 +498,7 @@ class ContractEditor:
         self.save_button.pack(side="left")
         for variable in self.variables[:-1]:
             variable.trace_add("write", self.update_preview)
-        self.variables[-1].trace_add("write", self.supply_amount_changed)
+        self.variables[-1].trace_add("write", self.total_amount_changed)
         self.vat_variable.trace_add("write", self.vat_changed)
         for entry in (self.entries[-1], self.vat_entry):
             entry.bind("<BackSpace>", self.skip_amount_separator)
@@ -574,6 +581,7 @@ class ContractEditor:
                 entry.insert(0, formatted)
                 variable.set(formatted)
                 entry.icursor(position)
+
     @staticmethod
     def skip_amount_separator(event) -> None:
         entry = event.widget
@@ -588,12 +596,12 @@ class ContractEditor:
 
     def suggested_vat(self) -> str:
         try:
-            amount = parse_won(self.variables[-1].get(), "공급가액")
+            amount = parse_won(self.variables[-1].get(), "총금액")
         except ValueError:
             return ""
         return f"{default_vat(amount):,}"
 
-    def supply_amount_changed(self, *_args) -> None:
+    def total_amount_changed(self, *_args) -> None:
         self.format_amount(self.variables[-1], self.entries[-1])
         suggested_vat = self.suggested_vat()
         if self.tax_exempt.get():
@@ -616,17 +624,28 @@ class ContractEditor:
             self.vat_entry.state(["!readonly"])
             self.vat_variable.set(self.vat_before_exemption or self.suggested_vat())
 
-    def candidate(self) -> Contract:
+    def split_amount(self) -> tuple[int, int | None]:
+        total = parse_won(self.variables[-1].get(), "총금액")
+        tax_text = self.vat_variable.get()
+        if self.legacy_tax and not self.tax_exempt.get() and not tax_text:
+            return total, None
+        vat = parse_won(tax_text, "부가세")
+        if vat > total:
+            raise ValueError("부가세는 총금액을 초과할 수 없습니다.")
+        return total - vat, vat
+
+    def candidate(self, supply: int, vat: int | None) -> Contract:
         tax_exempt = self.tax_exempt.get()
-        vat_amount = self.vat_variable.get()
-        if self.legacy_tax and not tax_exempt and not vat_amount:
-            tax_exempt, vat_amount = None, None
-        return Contract.from_fields(self.number, *(value.get() for value in self.variables),
-                                    vat_amount=vat_amount, tax_exempt=tax_exempt)
+        return Contract.from_fields(self.number, *(value.get() for value in self.variables[:-1]),
+                                    supply_amount=supply, vat_amount=vat,
+                                    tax_exempt=None if vat is None else tax_exempt)
 
     def update_preview(self, *_args) -> None:
+        self.supply_display.set("")
         try:
-            candidate = self.candidate()
+            supply, vat = self.split_amount()
+            self.supply_display.set(f"{supply:,}")
+            candidate = self.candidate(supply, vat)
         except ValueError as error:
             self.feedback.configure(text=str(error), style="Muted.TLabel")
             self.save_button.state(["disabled"])
@@ -641,7 +660,7 @@ class ContractEditor:
     def submit(self, _event=None) -> None:
         if self.save_button.instate(["disabled"]):
             return
-        if self.app.save_contract(self.candidate(), self.window):
+        if self.app.save_contract(self.candidate(*self.split_amount()), self.window):
             self.window.destroy()
 
 

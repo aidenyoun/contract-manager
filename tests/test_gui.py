@@ -154,7 +154,8 @@ class ContractGuiTests(unittest.TestCase):
         for digit in "5000001":
             entry.event_generate("<KeyPress>", keysym=digit)
         self.assertEqual((entry.get(), entry.index(tk.INSERT)), ("5,000,001", 9))
-        self.assertIn("1회 / 5,000,001원", editor.feedback.cget("text"))
+        self.assertEqual(editor.supply_display.get(), "4,500,001")
+        self.assertIn("0회 / 4,500,001원", editor.feedback.cget("text"))
 
         entry.icursor(2)
         entry.event_generate("<KeyPress>", keysym="BackSpace")
@@ -174,16 +175,20 @@ class ContractGuiTests(unittest.TestCase):
         self.assertTrue(editor.save_button.instate(["!disabled"]))
         editor.save_button.invoke()
         saved = self.app.store.load().contracts[-1]
-        self.assertEqual((saved.supply_amount, saved.vat_amount, saved.counted), (2_500_000, 250_000, 0))
+        self.assertEqual((saved.supply_amount, saved.vat_amount, saved.counted), (2_250_000, 250_000, 0))
 
     def test_vat_can_be_overridden_and_exempted_in_contract_editor(self):
         editor = ContractEditor(self.app, None)
         for variable, value in zip(editor.variables[1:], ("신규 업체", "1011123456", "세금 확인", "5000000")):
             variable.set(value)
         self.assertEqual(editor.vat_entry.get(), "500,000")
-        self.assertIn("0회 / 5,000,000원", editor.feedback.cget("text"))
+        self.assertIn("0회 / 4,500,000원", editor.feedback.cget("text"))
+        editor.vat_variable.set("5000001")
+        self.assertTrue(editor.save_button.instate(["disabled"]))
+        self.assertIn("총금액을 초과", editor.feedback.cget("text"))
         editor.vat_variable.set("345678")
         self.assertEqual(editor.vat_entry.get(), "345,678")
+        self.assertEqual(editor.supply_display.get(), "4,654,322")
         editor.exemption_checkbox.invoke()
         self.assertEqual(editor.vat_entry.get(), "0")
         self.assertTrue(editor.vat_entry.instate(["readonly"]))
@@ -195,6 +200,7 @@ class ContractGuiTests(unittest.TestCase):
 
         editor = ContractEditor(self.app, original)
         self.assertEqual(editor.vat_entry.get(), "345,678")
+        self.assertEqual(editor.entries[-1].get(), "5,000,000")
         editor.exemption_checkbox.invoke()
         editor.variables[-1].set("6000000")
         self.assertEqual(editor.vat_entry.get(), "0")
