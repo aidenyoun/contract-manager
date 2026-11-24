@@ -52,13 +52,30 @@ def default_vat(amount: int) -> int:
 @dataclass(frozen=True)
 class Contract:
     number: int
-    signed_on: date
+    signed_on: date | None
     company: str
     business_number: str
     title: str
     supply_amount: int
     vat_amount: int | None = None
     tax_exempt: bool | None = None
+    planned: bool = False
+    undated_year: int | None = None
+
+    @property
+    def fiscal_year(self) -> int:
+        if self.signed_on is not None:
+            return self.signed_on.year
+        assert self.undated_year is not None
+        return self.undated_year
+
+    @property
+    def date_order(self) -> tuple[date, int]:
+        return self.signed_on or date.min, self.number
+
+    @property
+    def contract_status(self) -> str:
+        return "계약 계획" if self.planned else "계약 완료"
 
     @property
     def total_amount(self) -> int:
@@ -66,7 +83,7 @@ class Contract:
 
     @property
     def key(self) -> tuple[int, str]:
-        return self.signed_on.year, self.business_number
+        return self.fiscal_year, self.business_number
 
     @property
     def counted(self) -> int:
@@ -87,8 +104,17 @@ class Contract:
         supply_amount: object,
         vat_amount: object = None,
         tax_exempt: bool | None = False,
+        *,
+        planned: bool = False,
+        fiscal_year: int | None = None,
     ) -> "Contract":
-        if isinstance(signed_on, datetime):
+        if signed_on is None or isinstance(signed_on, str) and not signed_on.strip():
+            if not planned:
+                raise ValueError("완료 계약은 계약 일자를 입력하세요.")
+            if type(fiscal_year) is not int or not 1 <= fiscal_year <= 9999:
+                raise ValueError("날짜 없는 계약 계획에는 회계연도가 필요합니다.")
+            signed_on = None
+        elif isinstance(signed_on, datetime):
             signed_on = signed_on.date()
         elif not isinstance(signed_on, date):
             try:
@@ -121,7 +147,8 @@ class Contract:
             if vat_amount > MAX_EXCEL_INTEGER:
                 raise ValueError("부가세를 최대 15자리까지 입력하세요.")
 
-        return cls(number, signed_on, company, business_number, title, supply_amount, vat_amount, tax_exempt)
+        return cls(number, signed_on, company, business_number, title, supply_amount, vat_amount,
+                   tax_exempt, planned, fiscal_year if signed_on is None else None)
 
 
 @dataclass(frozen=True)
@@ -172,7 +199,7 @@ class Ledger:
                 continue
 
             latest = existing.latest_contract
-            if (contract.signed_on, contract.number) > (latest.signed_on, latest.number):
+            if contract.date_order > latest.date_order:
                 latest = contract
             self.companies[contract.key] = CompanyYear(
                 latest, existing.totals.add(contract), existing.contract_count + 1

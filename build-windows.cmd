@@ -7,5 +7,5 @@ if not exist "%BUILD_PYTHON%" (
 )
 "%BUILD_PYTHON%" -m pip install -r requirements.txt PyInstaller==6.16.0 || exit /b 1
 "%BUILD_PYTHON%" -m unittest discover -s tests -v || exit /b 1
-"%BUILD_PYTHON%" -m PyInstaller --noconfirm --clean --onefile --windowed --name ContractManager-v8 app.py || exit /b 1
-echo dist\ContractManager-v8.exe
+"%BUILD_PYTHON%" -m PyInstaller --noconfirm --clean --onefile --windowed --name ContractManager-v9 app.py || exit /b 1
+echo dist\ContractManager-v9.exe

@@ -93,9 +93,9 @@ class ContractGuiTests(unittest.TestCase):
     def test_contract_headers_sort_and_keep_direction_after_filtering(self):
         table = self.app.contract_table
         click_date = table.heading("column1", "command")
-        click_amount = table.heading("column5", "command")
-        self.assertEqual(table.heading("column5", "text"), "총금액")
-        self.assertEqual(table.heading("column6", "text"), "공급가액")
+        click_amount = table.heading("column6", "command")
+        self.assertEqual(table.heading("column6", "text"), "총금액")
+        self.assertEqual(table.heading("column7", "text"), "공급가액")
         self.assertEqual(table.get_children(), ("5", "4", "3"))
         table.tk.call(click_date)
         self.assertEqual(table.get_children(), ("3", "4", "5"))
@@ -107,7 +107,7 @@ class ContractGuiTests(unittest.TestCase):
         self.assertEqual(table.selection(), ("3",))
         table.tk.call(click_amount)
         self.assertEqual(table.get_children(), ("5", "3", "4"))
-        self.assertTrue(table.heading("column5", "text").endswith("↓"))
+        self.assertTrue(table.heading("column6", "text").endswith("↓"))
         self.assertFalse(table.heading("column1", "text").endswith("↑"))
         self.app.query.set("한빛")
         self.assertEqual(table.get_children(), ("3", "4"))
@@ -146,6 +146,66 @@ class ContractGuiTests(unittest.TestCase):
         self.assertEqual(editor.variables[1].get(), "이전 연도 업체")
         self.assertEqual(editor.variables[2].get(), "832-10-45678")
 
+    def test_plan_popup_and_conversion_without_duplicate_aggregation(self):
+        self.app.year.set("2029")
+        editor = ContractEditor(self.app, None)
+        for variable, value in zip(editor.variables, ("", "계획 업체", "1112233445", "날짜 없는 계획", "5500000")):
+            variable.set(value)
+        self.assertTrue(editor.save_button.instate(["disabled"]))
+        editor.planned.set(True)
+        editor.update_preview()
+        self.assertTrue(editor.save_button.instate(["!disabled"]))
+        self.assertIn("1회 / 5,000,000원", editor.feedback.cget("text"))
+        editor.save_button.invoke()
+        plan = self.app.store.load().contracts[-1]
+        self.assertEqual((plan.signed_on, plan.planned, plan.fiscal_year), (None, True, 2029))
+        self.assertEqual(self.app.contract_table.item(str(plan.number), "values")[1:3], ("", "계약 계획"))
+        self.assertIn("1건", self.app.metrics[-1].get())
+        self.app.show_plan_overview()
+        popup = self.root.grab_current()
+        table, = find_widgets(popup, ttk.Treeview)
+        self.assertEqual(table.get_children(), (str(plan.number),))
+        self.assertIn("5,000,000원", next(find_widgets(popup, ttk.Label)).cget("text"))
+        popup.destroy()
+
+        editor = ContractEditor(self.app, plan)
+        editor.variables[0].set("2030-07-12")
+        self.assertTrue(editor.candidate(*editor.split_amount()).planned)
+        editor.planned.set(False)
+        editor.update_preview()
+        editor.save_button.invoke()
+        saved = self.app.store.load()
+        completed = saved.by_number[plan.number]
+        self.assertEqual((completed.planned, completed.signed_on), (False, date(2030, 7, 12)))
+        self.assertNotIn(plan.key, saved.companies)
+        self.assertEqual(saved.companies[completed.key].totals.count, 1)
+        self.assertEqual(saved.companies[completed.key].totals.amount, 5_000_000)
+        self.assertIn("0건", self.app.metrics[-1].get())
+
+    def test_dragged_column_width_stays_after_refresh_and_reopen(self):
+        table = self.app.contract_table
+        column = "column5"
+        iid = table.get_children()[0]
+        x, _, original_width, _ = table.bbox(iid, column)
+        edge = x + original_width - 1
+        self.assertGreaterEqual(original_width, 210)
+        self.assertEqual(table.identify_region(edge, 8), "separator")
+        table.event_generate("<ButtonPress-1>", x=edge, y=8)
+        table.event_generate("<B1-Motion>", x=edge - 25, y=8)
+        table.event_generate("<ButtonRelease-1>", x=edge - 25, y=8)
+        self.root.update()
+        width = table.column(column, "width")
+        self.assertLess(width, original_width)
+        self.app.year.set("2030")
+        self.root.update()
+        self.assertEqual(table.column(column, "width"), width)
+
+        other_window = tk.Toplevel(self.root)
+        self.addCleanup(other_window.destroy)
+        reopened = ContractApp(other_window, self.app.store, self.app.ledger)
+        self.root.update()
+        self.assertEqual(reopened.contract_table.column(column, "width"), width)
+
     def test_amount_formats_as_typed_and_saved_with_numeric_value(self):
         editor = ContractEditor(self.app, None)
         for variable, value in zip(editor.variables[1:4], ("신규 업체", "1011123456", "점검 계약")):
@@ -180,7 +240,7 @@ class ContractGuiTests(unittest.TestCase):
         saved = self.app.store.load().contracts[-1]
         self.assertEqual((saved.supply_amount, saved.vat_amount, saved.counted), (2_272_728, 227_272, 0))
         table = self.app.contract_table
-        self.assertEqual(table.item(str(saved.number), "values")[5:8], ("2,500,000원", "2,272,728원", "227,272원"))
+        self.assertEqual(table.item(str(saved.number), "values")[6:9], ("2,500,000원", "2,272,728원", "227,272원"))
 
     def test_vat_can_be_overridden_and_exempted_in_contract_editor(self):
         editor = ContractEditor(self.app, None)

@@ -1,6 +1,7 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date
+import json
 import os
 from pathlib import Path
 import sys
@@ -23,9 +24,9 @@ NAVY = "#183248"
 TEAL = "#007c70"
 DANGER = "#a22531"
 
-VERSION = "v8.0"
+VERSION = "v9.0"
 APP_TITLE = f"계약 한도 관리 · {VERSION}"
-METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체")
+METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체", "계약 계획 현황")
 
 
 def numeric_value(text: str) -> int:
@@ -41,10 +42,10 @@ class Column:
 
 
 CONTRACT_COLUMNS = tuple(Column(label, *settings) for label, settings in zip(
-    (*CONTRACT_HEADERS[:5], "총금액", *CONTRACT_HEADERS[5:]),
+    (*CONTRACT_HEADERS[:2], "계약 상태", *CONTRACT_HEADERS[2:5], "총금액", *CONTRACT_HEADERS[5:10]),
     (
-        (51, "center", numeric_value), (98, "center"), (122, "w"), (110, "center"),
-        (143, "w"), (107, "e", numeric_value), (101, "e", numeric_value),
+        (51, "center", numeric_value), (98, "center"), (92, "center"), (122, "w"), (110, "center"),
+        (210, "w"), (107, "e", numeric_value), (101, "e", numeric_value),
         (97, "e", lambda text: -1 if text == "—" else numeric_value(text)), (90, "center"),
         (150, "e", numeric_value), (174, "e", numeric_value),
     ),
@@ -114,12 +115,36 @@ class SortableTable(ttk.Treeview):
         for index, (key, column) in enumerate(zip(self.column_ids, columns)):
             self.heading(key, anchor="w" if column.anchor == "w" else "center",
                          command=lambda index=index: self.sort_by(index))
-            self.column(key, width=column.width, minwidth=column.width, anchor=column.anchor,
-                        stretch=column.anchor == "w")
+            self.column(key, width=column.width, minwidth=45, anchor=column.anchor, stretch=False)
         self.update_sort_headings()
         self.tag_configure("alternate", background="#f5f8fa")
         self.tag_configure("한도 도달", foreground="#835200")
         self.tag_configure("한도 초과", foreground=DANGER)
+        self.tag_configure("계약 계획", foreground="#00776d")
+
+    def remember_widths(self, widths: dict, on_resize: Callable[[dict], None]) -> None:
+        for key, column in zip(self.column_ids, self.column_specs):
+            width = widths.get(column.title)
+            if type(width) is int and 45 <= width <= 20_000:
+                self.column(key, width=width)
+
+        resizing = False
+
+        def begin(event):
+            nonlocal resizing
+            resizing = self.identify_region(event.x, event.y) == "separator"
+
+        def finish(_event):
+            nonlocal resizing
+            if resizing:
+                resizing = False
+                self.after_idle(lambda: on_resize({
+                    column.title: self.column(key, "width")
+                    for key, column in zip(self.column_ids, self.column_specs)
+                }))
+
+        self.bind("<ButtonPress-1>", begin, add="+")
+        self.bind("<ButtonRelease-1>", finish, add="+")
 
     def update_sort_headings(self) -> None:
         arrow = "↓" if self.descending else "↑"
@@ -172,6 +197,19 @@ def fill_company_table(table: SortableTable, companies: list[CompanyYear]) -> No
     table.apply_sort()
 
 
+def fill_contract_table(table: SortableTable, rows: Iterable[Contract], companies: dict[str, CompanyYear]) -> None:
+    for row in sorted(rows, key=lambda row: row.date_order, reverse=True):
+        totals = companies[row.business_number].totals
+        tags = ("계약 계획", totals.status) if row.planned else (totals.status,)
+        table.insert("", "end", iid=str(row.number), tags=tags, values=(
+            row.number, row.signed_on.isoformat() if row.signed_on else "", row.contract_status,
+            row.company, business_display(row.business_number), row.title, won(row.total_amount), won(row.supply_amount),
+            "—" if row.vat_amount is None else won(row.vat_amount), EXEMPTION_LABELS[row.tax_exempt],
+            f"{totals.count}회", won(totals.amount),
+        ))
+    table.apply_sort()
+
+
 def reveal_modal(window: tk.Toplevel, parent: tk.Tk) -> None:
     window.update_idletasks()
     max_width, max_height = window.winfo_screenwidth() - 32, window.winfo_screenheight() - 60
@@ -195,7 +233,13 @@ class ContractApp:
         self.status = tk.StringVar(value=f"데이터 파일  {self.store.path}")
         self.contract_hint = tk.StringVar()
         self.company_hint = tk.StringVar()
-        self.metrics = tuple(tk.StringVar() for _ in range(3))
+        self.metrics = tuple(tk.StringVar() for _ in METRIC_TITLES)
+        self.layout_path = store.path.with_suffix(".layout.json")
+        try:
+            layout = json.loads(self.layout_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            layout = {}
+        self.layout = layout if isinstance(layout, dict) else {}
 
         configure_style(root)
         root.title(APP_TITLE)
@@ -235,12 +279,12 @@ class ContractApp:
         cards = ttk.Frame(body, style="Surface.TFrame")
         cards.pack(fill="x", pady=12)
         commands = (self.show_all_contracts, self.show_company_overview,
-                    lambda: self.show_company_overview(at_limit=True))
+                    lambda: self.show_company_overview(at_limit=True), self.show_plan_overview)
         for index, command in enumerate(commands):
             cards.columnconfigure(index, weight=1, uniform="metric")
             card = ttk.Button(cards, textvariable=self.metrics[index], style="Metric.TButton",
                               command=command, cursor="hand2")
-            card.grid(row=0, column=index, sticky="ew", padx=(0, 8 if index < 2 else 0))
+            card.grid(row=0, column=index, sticky="ew", padx=(0, 8 if index < len(commands) - 1 else 0))
 
         self.tabs = ttk.Notebook(body)
         self.tabs.pack(fill="both", expand=True)
@@ -257,6 +301,7 @@ class ContractApp:
         self.edit_button = ttk.Button(actions, text="수정", command=self.edit_selected)
         self.edit_button.pack(side="right", padx=(0, 6))
         self.contract_table = table_in(self.contract_tab, CONTRACT_COLUMNS, default_sort=(1, True))
+        self.restore_column_layout(self.contract_table, "contracts")
         self.contract_table.bind("<<TreeviewSelect>>", lambda _: self.update_buttons())
         self.contract_table.bind("<Double-1>", self.edit_selected)
         self.contract_table.bind("<Return>", self.edit_selected)
@@ -267,12 +312,26 @@ class ContractApp:
         self.detail_button = ttk.Button(company_actions, text="업체 계약 내역", command=self.show_company)
         self.detail_button.pack(side="right")
         self.company_table = table_in(company_tab, COMPANY_COLUMNS)
+        self.restore_column_layout(self.company_table, "companies")
         self.company_table.bind("<<TreeviewSelect>>", lambda _: self.update_buttons())
         self.company_table.bind("<Double-1>", self.show_company)
         self.company_table.bind("<Return>", self.show_company)
 
         self.tabs.bind("<<NotebookTabChanged>>", lambda _: self.update_buttons())
         ttk.Label(body, textvariable=self.status, style="Status.TLabel", padding=(2, 8, 0, 0)).pack(anchor="w")
+
+    def restore_column_layout(self, table: SortableTable, name: str) -> None:
+        def save(widths):
+            self.layout[name] = widths
+            temporary = self.layout_path.with_suffix(".tmp")
+            try:
+                temporary.write_text(json.dumps(self.layout, ensure_ascii=False), encoding="utf-8")
+                temporary.replace(self.layout_path)
+            except OSError:
+                pass
+
+        widths = self.layout.get(name)
+        table.remember_widths(widths if isinstance(widths, dict) else {}, save)
 
     def matching(self, company: str, business_number: str, title: str = "") -> bool:
         query = self.query.get().strip().casefold()
@@ -291,9 +350,10 @@ class ContractApp:
         years = {year, *self.ledger.fiscal_years}
         self.year_box["values"] = sorted(years, reverse=True)
         companies = self.companies_for_year(year)
-        rows = tuple(contract for contract in self.ledger.contracts if contract.signed_on.year == year)
+        rows = tuple(contract for contract in self.ledger.contracts if contract.fiscal_year == year)
         values = (f"{len(rows):,}건", f"{len(companies):,}곳",
-                  f"{sum(company.totals.status != '정상' for company in companies.values()):,}곳")
+                  f"{sum(company.totals.status != '정상' for company in companies.values()):,}곳",
+                  f"{sum(row.planned for row in rows):,}건")
         for metric, title, value in zip(self.metrics, METRIC_TITLES, values):
             metric.set(f"{title}\n{value}")
 
@@ -304,17 +364,8 @@ class ContractApp:
         clear_table(self.contract_table)
         clear_table(self.company_table)
 
-        matched_rows = sorted((row for row in rows if self.matching(row.company, row.business_number, row.title)),
-                              key=lambda row: (row.signed_on, row.number), reverse=True)
-        for row in matched_rows:
-            totals = companies[row.business_number].totals
-            self.contract_table.insert("", "end", iid=str(row.number), tags=(totals.status,), values=(
-                row.number, row.signed_on.isoformat(), row.company, business_display(row.business_number),
-                row.title, won(row.total_amount), won(row.supply_amount),
-                "—" if row.vat_amount is None else won(row.vat_amount),
-                EXEMPTION_LABELS[row.tax_exempt], f"{totals.count}회", won(totals.amount),
-            ))
-        self.contract_table.apply_sort()
+        matched_rows = [row for row in rows if self.matching(row.company, row.business_number, row.title)]
+        fill_contract_table(self.contract_table, matched_rows, companies)
         if matched_rows:
             self.contract_hint.set(f"표시 {len(matched_rows):,}건  /  전체 {len(rows):,}건")
         else:
@@ -375,6 +426,30 @@ class ContractApp:
         reveal_modal(window, self.root)
         close.focus_set()
 
+    def show_plan_overview(self) -> None:
+        year = int(self.year.get())
+        plans = [row for row in self.ledger.contracts if row.planned and row.fiscal_year == year]
+        window = tk.Toplevel(self.root)
+        window.withdraw()
+        window.title(f"{year}년 계약 계획 현황")
+        window.transient(self.root)
+        window.bind("<Escape>", lambda _: window.destroy())
+        panel = ttk.Frame(window)
+        panel.pack(fill="both", expand=True)
+        amount = sum(row.amount_for_limit for row in plans)
+        count = sum(row.counted for row in plans)
+        summary = (f"{year}년 계약 계획 {len(plans):,}건  ·  집계 공급가액 {won(amount)}  ·  제한 횟수 {count}회"
+                   if plans else f"{year}년에 등록된 계약 계획이 없습니다.")
+        ttk.Label(panel, text=summary, padding=(16, 12)).pack(anchor="w")
+        if plans:
+            table = table_in(panel, CONTRACT_COLUMNS, default_sort=(1, True))
+            table.configure(height=min(10, len(plans)))
+            fill_contract_table(table, plans, self.companies_for_year(year))
+        close = ttk.Button(panel, text="닫기", command=window.destroy)
+        close.pack(anchor="e", padx=16, pady=12)
+        reveal_modal(window, self.root)
+        close.focus_set()
+
     def show_company(self, event=None) -> None:
         if event and event.type == tk.EventType.ButtonPress and not self.company_table.identify_row(event.y):
             return
@@ -404,7 +479,7 @@ class ContractApp:
         self.ledger = ledger
         if not self.matching(contract.company, contract.business_number, contract.title):
             self.query.set("")
-        self.year.set(str(contract.signed_on.year))
+        self.year.set(str(contract.fiscal_year))
         self.tabs.select(self.contract_tab)
         self.refresh(contract.number)
         self.status.set(f"{contract.number}번 계약 {'등록' if is_new else '수정'} 완료")
@@ -442,9 +517,12 @@ class ContractEditor:
         self.window.resizable(False, False)
 
         today = date.today()
-        default_date = today if int(app.year.get()) == today.year else date(int(app.year.get()), 1, 1)
+        self.fiscal_year = contract.fiscal_year if contract else int(app.year.get())
+        self.planned = tk.BooleanVar(value=contract.planned if contract else False)
+        default_date = today if self.fiscal_year == today.year else date(self.fiscal_year, 1, 1)
+        initial_date = contract.signed_on if contract else default_date
         fields = (
-            ("계약 일자", contract.signed_on.isoformat() if contract else default_date.isoformat(), "YYYY-MM-DD"),
+            ("계약 일자", initial_date.isoformat() if initial_date else "", ""),
             ("업체명", contract.company if contract else "", ""),
             ("사업자번호", business_display(contract.business_number) if contract else "", "숫자 10자리"),
             ("계약명", contract.title if contract else "", ""),
@@ -463,7 +541,12 @@ class ContractEditor:
             variable = tk.StringVar(value=initial)
             entry = ttk.Entry(form, textvariable=variable, width=35)
             entry.grid(row=row, column=1, sticky="ew", pady=4)
-            ttk.Label(form, text=hint, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(9, 0))
+            if row == first_row:
+                ttk.Checkbutton(form, text="계약 계획", variable=self.planned, command=self.update_preview).grid(
+                    row=row, column=2, sticky="w", padx=(9, 0)
+                )
+            elif hint:
+                ttk.Label(form, text=hint, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(9, 0))
             self.variables.append(variable)
             self.entries.append(entry)
 
@@ -516,7 +599,7 @@ class ContractEditor:
 
     def add_company_history(self, form: ttk.Frame) -> None:
         latest_per_year = sorted((company.latest_contract for company in self.app.ledger.companies.values()),
-                                 key=lambda row: (row.signed_on, row.number))
+                                 key=lambda row: (row.fiscal_year, row.date_order))
         latest_per_number = {row.business_number: row for row in latest_per_year}
         self.company_history = {
             f"{row.company}  ({business_display(row.business_number)})": row
@@ -643,7 +726,8 @@ class ContractEditor:
         tax_exempt = self.tax_exempt.get()
         return Contract.from_fields(self.number, *(value.get() for value in self.variables[:-1]),
                                     supply_amount=supply, vat_amount=vat,
-                                    tax_exempt=None if vat is None else tax_exempt)
+                                    tax_exempt=None if vat is None else tax_exempt,
+                                    planned=self.planned.get(), fiscal_year=self.fiscal_year)
 
     def update_preview(self, *_args) -> None:
         self.supply_display.set("")
@@ -657,7 +741,7 @@ class ContractEditor:
             return
 
         before, after = self.app.ledger.preview(candidate)
-        line = f"{candidate.signed_on.year}년 누적   {before.count}회 / {won(before.amount)} → {after.count}회 / {won(after.amount)}"
+        line = f"{candidate.fiscal_year}년 누적   {before.count}회 / {won(before.amount)} → {after.count}회 / {won(after.amount)}"
         violations = self.app.ledger.limit_violations(candidate, before, after)
         status = "집계 제외" if not candidate.amount_for_limit else after.status
         self.feedback.configure(text=f"{line}\n{' · '.join(violations) if violations else status}",

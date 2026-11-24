@@ -5,3 +5,5 @@ dist/
 *.spec
 계약대장*.xlsx
 .계약대장.lock
+*.layout.json
+*.layout.tmp

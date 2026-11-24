@@ -141,8 +141,8 @@ class WorkbookTests(unittest.TestCase):
         self.assertEqual(sheet["D2"].value, BUSINESS)
         self.assertEqual((sheet["E2"].value, sheet["E2"].data_type), ("=1+1", "s"))
         for sheet in (sheet, workbook["2026년"]):
-            self.assertEqual(tuple(cell.value for cell in sheet[2][5:]), (4_000_000, 123_456, "아니오", 1, 10_000_000))
-            self.assertEqual(tuple(cell.value for cell in sheet[3][5:]), (6_000_000, 0, "예", 1, 10_000_000))
+            self.assertEqual(tuple(cell.value for cell in sheet[2][5:10]), (4_000_000, 123_456, "아니오", 1, 10_000_000))
+            self.assertEqual(tuple(cell.value for cell in sheet[3][5:10]), (6_000_000, 0, "예", 1, 10_000_000))
         self.assertEqual(workbook[SUMMARY_SHEET]["F2"].value, 10_000_000)
         reloaded = WorkbookStore(self.path).load()
         self.assertEqual(reloaded.contracts, ledger.contracts)
@@ -174,6 +174,22 @@ class WorkbookTests(unittest.TestCase):
         self.store.load()
         self.assertEqual(self.path.read_bytes(), refreshed_content)
 
+    def test_dated_and_undated_plans_round_trip_in_year_sheets(self):
+        fields = ("한빛", BUSINESS, "계약 계획", 2_000_000)
+        with self.assertRaisesRegex(ValueError, "계약 일자를 입력"):
+            Contract.from_fields(1, "", *fields)
+        plan = Contract.from_fields(1, "", *fields, planned=True, fiscal_year=2029)
+        dated = Contract.from_fields(2, "2030-02-10", *fields, planned=True, fiscal_year=2029)
+        ledger = self.store.load().upsert(plan).upsert(dated)
+        self.store.save(ledger)
+        self.assertEqual(self.store.load().contracts, (plan, dated))
+        self.assertEqual(ledger.companies[plan.key].totals, Totals(2_000_000, 0))
+        workbook = load_workbook(BytesIO(self.path.read_bytes()))
+        self.addCleanup(workbook.close)
+        self.assertIsNone(workbook["2029년"]["B2"].value)
+        self.assertEqual((workbook["2029년"]["K2"].value, workbook["2029년"]["L2"].value), ("계약 계획", 2029))
+        self.assertEqual(workbook["2030년"]["B2"].value, "2030-02-10")
+
     def test_new_workbook_contains_empty_fiscal_year_tabs(self):
         self.store.load()
         workbook = load_workbook(BytesIO(self.path.read_bytes()))
@@ -184,7 +200,7 @@ class WorkbookTests(unittest.TestCase):
         ])
         sheet = workbook["2030년"]
         self.assertEqual(tuple(sheet.values), (CONTRACT_HEADERS,))
-        self.assertEqual((sheet.freeze_panes, sheet.auto_filter.ref), ("A2", "A1:J1"))
+        self.assertEqual((sheet.freeze_panes, sheet.auto_filter.ref), ("A2", "A1:L1"))
 
     def test_year_tabs_recalculate_when_contracts_move_or_are_deleted(self):
         ledger = self.store.load()
@@ -194,8 +210,8 @@ class WorkbookTests(unittest.TestCase):
         self.store.save(ledger)
         workbook = load_workbook(BytesIO(self.path.read_bytes()))
         self.addCleanup(workbook.close)
-        self.assertEqual(list(workbook["2025년"].values)[1][5:], (6_000_000, 600_000, "아니오", 1, 6_000_000))
-        self.assertEqual(list(workbook["2026년"].values)[1][5:], (4_000_000, 400_000, "아니오", 0, 4_000_000))
+        self.assertEqual(list(workbook["2025년"].values)[1][5:10], (6_000_000, 600_000, "아니오", 1, 6_000_000))
+        self.assertEqual(list(workbook["2026년"].values)[1][5:10], (4_000_000, 400_000, "아니오", 0, 4_000_000))
         self.assertEqual(workbook["2024년"]["A2"].value, 3)
         self.assertEqual(self.store.load().contracts, ledger.contracts)
 
@@ -204,7 +220,7 @@ class WorkbookTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(self.path.read_bytes()))
         self.addCleanup(workbook.close)
         self.assertEqual(tuple(workbook["2025년"].values), (CONTRACT_HEADERS,))
-        self.assertEqual([row[8:] for row in list(workbook["2026년"].values)[1:]],
+        self.assertEqual([row[8:10] for row in list(workbook["2026년"].values)[1:]],
                          [(1, 10_000_000), (1, 10_000_000)])
         if date.today().year != 2024:
             self.assertNotIn("2024년", workbook.sheetnames)

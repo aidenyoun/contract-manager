@@ -28,6 +28,7 @@ LEGACY_CONTRACT_HEADERS = (
 CONTRACT_HEADERS = (
     *LEGACY_CONTRACT_HEADERS[:5], "공급가액", "부가세", "면세 여부",
     "업체별 연간 누적 횟수", "업체별 연간 누적 공급가액",
+    "계약 상태", "회계연도",
 )
 SUMMARY_HEADERS = (
     "회계연도", "업체명", "사업자번호", "전체 계약 건수", "연간 누적 횟수",
@@ -74,12 +75,13 @@ def write_contract_sheet(sheet, ledger: Ledger, contracts: Iterable[Contract]) -
     for row_number, contract in enumerate(contracts, start=2):
         totals = ledger.companies[contract.key].totals
         write_row(sheet, row_number, (
-            contract.number, contract.signed_on.isoformat(), contract.company,
+            contract.number, contract.signed_on.isoformat() if contract.signed_on else None, contract.company,
             business_display(contract.business_number), contract.title, contract.supply_amount,
             contract.vat_amount, EXEMPTION_LABELS[contract.tax_exempt],
             totals.count, totals.amount,
+            contract.contract_status, contract.fiscal_year,
         ))
-    format_sheet(sheet, (10, 15, 24, 18, 40, 17, 17, 14, 24, 28), (6, 7, 10))
+    format_sheet(sheet, (10, 15, 24, 18, 40, 17, 17, 14, 24, 28, 15, 12), (6, 7, 10))
 
 
 def write_summary_sheet(summary, ledger: Ledger) -> None:
@@ -120,7 +122,8 @@ def write_workbook(ledger: Ledger, path: Path, previous: bytes | None = None, *,
         contract_sheet = workbook[CONTRACT_SHEET]
         upgrade_tax_columns = contract_sheet["F1"].value == LEGACY_CONTRACT_HEADERS[5]
         refresh_totals = needs_aggregation_refresh(workbook)
-        refresh_contracts = not layout_only or upgrade_tax_columns or refresh_totals
+        refresh_contracts = (not layout_only or upgrade_tax_columns or refresh_totals
+                             or (contract_sheet["K1"].value, contract_sheet["L1"].value) != CONTRACT_HEADERS[10:12])
         if refresh_contracts:
             write_contract_sheet(contract_sheet, ledger, ledger.contracts)
         summary = workbook[SUMMARY_SHEET] if SUMMARY_SHEET in workbook.sheetnames else None
@@ -138,7 +141,7 @@ def write_workbook(ledger: Ledger, path: Path, previous: bytes | None = None, *,
         year_sheets = managed_year_sheets(workbook)
         year_contracts: dict[int, list[Contract]] = {year: [] for year in ledger.fiscal_years}
         for contract in ledger.contracts:
-            year_contracts[contract.signed_on.year].append(contract)
+            year_contracts[contract.fiscal_year].append(contract)
 
         for year, name in year_sheets.items():
             if year not in year_contracts:
@@ -176,10 +179,11 @@ def read_workbook(content: bytes) -> tuple[Ledger, bool, bool]:
             if CONTRACT_SHEET not in workbook.sheetnames:
                 raise StorageError(f"엑셀에 '{CONTRACT_SHEET}' 시트가 없습니다.")
             sheet = workbook[CONTRACT_SHEET]
-            rows = sheet.iter_rows(max_col=8, values_only=True)
+            rows = sheet.iter_rows(max_col=len(CONTRACT_HEADERS), values_only=True)
             header = next(rows, ())
             legacy_amounts = header[:6] == LEGACY_CONTRACT_HEADERS[:6]
-            if not legacy_amounts and header != CONTRACT_HEADERS[:8]:
+            has_plan_columns = header[10:12] == CONTRACT_HEADERS[10:12]
+            if not legacy_amounts and header[:8] != CONTRACT_HEADERS[:8]:
                 raise StorageError("엑셀의 계약 대장 열 이름 또는 순서가 다릅니다.")
 
             contracts = []
@@ -199,7 +203,11 @@ def read_workbook(content: bytes) -> tuple[Ledger, bool, bool]:
                         tax_exempt = EXEMPTION_VALUES[status]
                         if tax_exempt is False and vat_amount is None:
                             raise ValueError("부가세를 입력하세요. 부가세가 0원이면 0을 입력하세요.")
-                    contract = Contract.from_fields(*row[:6], vat_amount=vat_amount, tax_exempt=tax_exempt)
+                    contract_status, year = row[10:12] if has_plan_columns else (None, None)
+                    if contract_status not in (None, "계약 계획", "계약 완료"):
+                        raise ValueError("계약 상태는 계약 계획 또는 계약 완료여야 합니다.")
+                    contract = Contract.from_fields(*row[:6], vat_amount=vat_amount, tax_exempt=tax_exempt,
+                                                    planned=contract_status == "계약 계획", fiscal_year=year)
                 except ValueError as error:
                     raise StorageError(f"계약 대장 {row_number}행\n{error}") from error
                 contracts.append(contract)
@@ -211,7 +219,7 @@ def read_workbook(content: bytes) -> tuple[Ledger, bool, bool]:
                 if type(saved_next) is int:
                     next_number = max(next_number, saved_next)
             ledger = Ledger(tuple(sorted(contracts, key=lambda row: row.number)), next_number)
-            needs_layout_update = (needs_aggregation_refresh(workbook)
+            needs_layout_update = (not has_plan_columns or needs_aggregation_refresh(workbook)
                                    or not set(ledger.fiscal_years).issubset(managed_year_sheets(workbook)))
             return ledger, needs_layout_update, legacy_amounts
         finally:
