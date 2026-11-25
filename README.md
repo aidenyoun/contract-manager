@@ -2,10 +2,11 @@
 
 ## Windows에서 실행
 
-Windows x64용 `ContractManager-v9.exe`를 실행합니다. 기존 대장을 이어서 사용하려면 `계약대장.xlsx`가 있는 폴더에 새 실행 파일을 넣고 엑셀에서 대장을 닫은 후 실행하세요. 대장이 없는 폴더에서 처음 실행하면 빈 `계약대장.xlsx`를 생성합니다. Python이 설치되어 있지 않아도 실행할 수 있습니다. 프로그램 제목에 `v9.0`이 표시됩니다. [v9.0 배포 페이지](https://github.com/aidenyoun/contract-manager/releases/tag/v9.0)
+Windows x64용 `ContractManager-v10.exe`를 실행합니다. 기존 대장을 이어서 사용하려면 `계약대장.xlsx`가 있는 폴더에 새 실행 파일을 넣고 엑셀에서 대장을 닫은 후 실행하세요. 대장이 없는 폴더에서 처음 실행하면 빈 `계약대장.xlsx`를 생성합니다. Python이 설치되어 있지 않아도 실행할 수 있습니다. 프로그램 제목에 `v10.0`이 표시됩니다. [v10.0 배포 페이지](https://github.com/aidenyoun/contract-manager/releases/tag/v10.0)
 
 - **전체 계약**을 누르면 선택한 회계연도의 전체 계약 대장이 열립니다. **계약 업체**와 **한도 도달·초과 업체**를 누르면 해당 회계연도의 업체 목록과 누적 실적을 팝업으로 확인할 수 있습니다.
 - **계약 등록**의 **기존 업체**에서 업체명이나 사업자번호로 전체 계약 이력을 검색할 수 있습니다. 업체를 선택하면 해당 사업자번호와 최근 계약의 업체명이 함께 입력됩니다. 처음 거래하는 업체는 두 항목을 직접 입력합니다.
+- 새 계약의 **계약 일자**는 빈칸으로 시작합니다. 계약 일자와 사업자번호는 숫자만 입력하면 `YYYY-MM-DD`와 `000-00-00000` 형식으로 표시합니다.
 - 등록·수정 화면에서 **계약 계획**을 체크하면 일자를 비워 두거나 예정일을 입력할 수 있습니다. 날짜 없는 계획은 등록할 때 선택한 회계연도로 저장합니다. 날짜를 입력하면 그 날짜의 회계연도에 집계합니다.
 - 대시보드의 **계약 계획 현황**에서 선택한 회계연도의 계획 목록과 집계 금액·횟수를 확인합니다. 계약 대장과 엑셀 연도별 시트에 계획 상태가 표시됩니다. 완료 시 기존 계획을 열어 실제 계약일을 입력하고 **계약 계획** 체크를 해제한 뒤 저장합니다.
 - 계약 대장과 업체별 현황에서 헤더 경계를 드래그해 바꾼 열 너비는 대장 옆의 `계약대장.layout.json`에 저장됩니다.
@@ -31,4 +32,4 @@ Windows x64용 `ContractManager-v9.exe`를 실행합니다. 기존 대장을 이
 
 ## 소스 실행 및 빌드
 
-Windows x64에서 Python 3.12와 Tcl/Tk를 설치하고 `build-windows.cmd`를 실행하면 `dist/ContractManager-v9.exe`가 생성됩니다. 소스에서 실행할 때는 `python -m pip install -r requirements.txt`로 의존성을 설치한 뒤 `python app.py`를 실행하세요. 테스트는 `python -m unittest discover -s tests -v`로 실행합니다.
+Windows x64에서 Python 3.12와 Tcl/Tk를 설치하고 `build-windows.cmd`를 실행하면 `dist/ContractManager-v10.exe`가 생성됩니다. 소스에서 실행할 때는 `python -m pip install -r requirements.txt`로 의존성을 설치한 뒤 `python app.py`를 실행하세요. 테스트는 `python -m unittest discover -s tests -v`로 실행합니다.

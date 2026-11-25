@@ -87,8 +87,36 @@ class ContractGuiTests(unittest.TestCase):
         if self.year not in (2030, 2031):
             self.assertFalse(self.app.contract_table.get_children())
         editor = ContractEditor(self.app, None)
-        target_date = date.today() if self.year == 2030 else date(2030, 1, 1)
-        self.assertEqual(editor.variables[0].get(), target_date.isoformat())
+        self.assertEqual(editor.variables[0].get(), "")
+
+    def test_date_and_business_number_format_digit_input_and_save(self):
+        editor = ContractEditor(self.app, None)
+        self.assertEqual(editor.entries[0].get(), "")
+        editor.variables[1].set("신규 업체")
+        editor.variables[3].set("구분자 확인")
+        editor.variables[4].set("5500000")
+        for index, typed, expected in ((0, "20301125", "2030-11-25"), (2, "0123456789", "012-34-56789")):
+            entry = editor.entries[index]
+            entry.focus_force()
+            self.root.update()
+            for char in typed:
+                entry.event_generate("<KeyPress>", keysym=char)
+            self.assertEqual((entry.get(), entry.index(tk.INSERT)), (expected, len(expected)))
+        editor.entries[2].icursor(4)
+        editor.entries[2].event_generate("<KeyPress>", keysym="BackSpace")
+        self.assertEqual(editor.entries[2].get(), "013-45-6789")
+        self.assertTrue(editor.save_button.instate(["disabled"]))
+        editor.variables[2].set("012 34-56789")
+        editor.variables[0].set("20300230")
+        self.assertTrue(editor.save_button.instate(["disabled"]))
+        editor.variables[0].set("2030-11-25")
+        self.assertTrue(editor.save_button.instate(["!disabled"]))
+        editor.save_button.invoke()
+        saved = self.app.store.load().contracts[-1]
+        self.assertEqual((saved.signed_on, saved.business_number), (date(2030, 11, 25), "0123456789"))
+        reopened = ContractEditor(self.app, saved)
+        self.assertEqual(reopened.entries[0].get(), "2030-11-25")
+        self.assertEqual(reopened.entries[2].get(), "012-34-56789")
 
     def test_contract_headers_sort_and_keep_direction_after_filtering(self):
         table = self.app.contract_table
@@ -208,6 +236,7 @@ class ContractGuiTests(unittest.TestCase):
 
     def test_amount_formats_as_typed_and_saved_with_numeric_value(self):
         editor = ContractEditor(self.app, None)
+        editor.variables[0].set(f"{self.year}-01-15")
         for variable, value in zip(editor.variables[1:4], ("신규 업체", "1011123456", "점검 계약")):
             variable.set(value)
         entry = editor.entries[-1]
@@ -244,6 +273,7 @@ class ContractGuiTests(unittest.TestCase):
 
     def test_vat_can_be_overridden_and_exempted_in_contract_editor(self):
         editor = ContractEditor(self.app, None)
+        editor.variables[0].set(f"{self.year}-01-15")
         for variable, value in zip(editor.variables[1:], ("신규 업체", "1011123456", "세금 확인", "2310000")):
             variable.set(value)
         self.assertEqual(editor.vat_entry.get(), "210,000")

@@ -24,7 +24,7 @@ NAVY = "#183248"
 TEAL = "#007c70"
 DANGER = "#a22531"
 
-VERSION = "v9.0"
+VERSION = "v10.0"
 APP_TITLE = f"계약 한도 관리 · {VERSION}"
 METRIC_TITLES = ("전체 계약", "계약 업체", "한도 도달·초과 업체", "계약 계획 현황")
 
@@ -516,11 +516,9 @@ class ContractEditor:
         self.window.transient(app.root)
         self.window.resizable(False, False)
 
-        today = date.today()
         self.fiscal_year = contract.fiscal_year if contract else int(app.year.get())
         self.planned = tk.BooleanVar(value=contract.planned if contract else False)
-        default_date = today if self.fiscal_year == today.year else date(self.fiscal_year, 1, 1)
-        initial_date = contract.signed_on if contract else default_date
+        initial_date = contract.signed_on if contract else None
         fields = (
             ("계약 일자", initial_date.isoformat() if initial_date else "", ""),
             ("업체명", contract.company if contract else "", ""),
@@ -583,19 +581,22 @@ class ContractEditor:
         ttk.Button(buttons, text="취소", command=self.window.destroy).pack(side="left", padx=(0, 7))
         self.save_button = ttk.Button(buttons, text="저장", command=self.submit, style="Primary.TButton")
         self.save_button.pack(side="left")
-        for variable in self.variables[:-1]:
+        for variable in (self.variables[1], self.variables[3]):
             variable.trace_add("write", self.update_preview)
+        self.variables[0].trace_add("write", lambda *_: self.format_identifier(0, (4, 6)))
+        self.variables[2].trace_add("write", lambda *_: self.format_identifier(2, (3, 5)))
         self.variables[-1].trace_add("write", self.total_amount_changed)
         self.vat_variable.trace_add("write", self.vat_changed)
-        for entry in (self.entries[-1], self.vat_entry):
-            entry.bind("<BackSpace>", self.skip_amount_separator)
-            entry.bind("<Delete>", self.skip_amount_separator)
+        for entry, separator in ((self.entries[0], "-"), (self.entries[2], "-"),
+                                 (self.entries[-1], ","), (self.vat_entry, ",")):
+            for key in ("<BackSpace>", "<Delete>"):
+                entry.bind(key, lambda event, char=separator: self.skip_separator(event, char))
         self.window.bind("<Escape>", lambda _: self.window.destroy())
         self.window.bind("<Return>", self.submit)
 
         self.update_preview()
         reveal_modal(self.window, app.root)
-        self.entries[1 if not contract else 0].focus_set()
+        self.entries[0].focus_set()
 
     def add_company_history(self, form: ttk.Frame) -> None:
         latest_per_year = sorted((company.latest_contract for company in self.app.ledger.companies.values()),
@@ -646,6 +647,34 @@ class ContractEditor:
         return "break"
 
     @staticmethod
+    def replace_formatted(variable: tk.StringVar, entry: ttk.Entry, formatted: str, digits_before: int) -> None:
+        position = 0
+        for char in formatted:
+            if digits_before == 0:
+                break
+            position += 1
+            if char.isdecimal():
+                digits_before -= 1
+        # Update the widget before restoring the caret so Tk uses the formatted length.
+        entry.delete(0, tk.END)
+        entry.insert(0, formatted)
+        variable.set(formatted)
+        entry.icursor(position)
+
+    def format_identifier(self, field: int, boundaries: tuple[int, int]) -> None:
+        variable, entry = self.variables[field], self.entries[field]
+        text = variable.get()
+        digits = business_digits(text) if field == 2 else text.strip().replace("-", "")
+        if not digits or (digits.isascii() and digits.isdecimal()):
+            first, second = boundaries
+            formatted = "-".join(part for part in (digits[:first], digits[first:second], digits[second:]) if part)
+            if formatted != text:
+                caret = entry.index(tk.INSERT) if entry.get() == text else len(text)
+                digits_before = sum(char.isdecimal() for char in text[:caret])
+                self.replace_formatted(variable, entry, formatted, digits_before)
+        self.update_preview()
+
+    @staticmethod
     def format_amount(variable: tk.StringVar, entry: ttk.Entry) -> None:
         text = variable.get()
         digits = text.strip().replace(",", "")
@@ -658,27 +687,19 @@ class ContractEditor:
                 caret = entry.index(tk.INSERT) if entry.get() == text else len(text)
                 digits_before_caret = len(text[:caret].strip().replace(",", ""))
                 leading_zeros_removed = len(digits) - len(formatted.replace(",", ""))
-                remaining = max(0, digits_before_caret - leading_zeros_removed)
-                position = 0
-                while remaining:
-                    remaining -= formatted[position] != ","
-                    position += 1
-                # Update the entry before restoring its caret so a newly added comma counts in its length.
-                entry.delete(0, tk.END)
-                entry.insert(0, formatted)
-                variable.set(formatted)
-                entry.icursor(position)
+                ContractEditor.replace_formatted(variable, entry, formatted,
+                                                 max(0, digits_before_caret - leading_zeros_removed))
 
     @staticmethod
-    def skip_amount_separator(event) -> None:
+    def skip_separator(event, separator: str) -> None:
         entry = event.widget
         if entry.selection_present():
             return
         caret = entry.index(tk.INSERT)
         text = entry.get()
-        if event.keysym == "BackSpace" and caret > 0 and text[caret - 1] == ",":
+        if event.keysym == "BackSpace" and caret > 0 and text[caret - 1] == separator:
             entry.icursor(caret - 1)
-        elif event.keysym == "Delete" and text[caret:caret + 1] == ",":
+        elif event.keysym == "Delete" and text[caret:caret + 1] == separator:
             entry.icursor(caret + 1)
 
     def suggested_vat(self) -> str:
